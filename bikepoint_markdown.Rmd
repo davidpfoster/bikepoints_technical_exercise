@@ -1,0 +1,204 @@
+---
+title: "Santander Bikepoint Analysis"
+output: html_document
+author: "David Foster"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+.html-widget {
+    margin: auto;
+}
+</style>
+
+In this code I have designed two interactive maps which could serve as a basis for assisting in the decision of where would be best to place new Santander bike docking stations in order to benefit public health.
+
+```{r, message = FALSE}
+library(dplyr)        # data manipulation
+library(data.table)   # data manipulation
+library(jsonlite)     # handling json
+library(httr)         # handling API requests
+library(fingertipsR)  # R wrapper for public health data repository
+library(sf)           # for use in handling spatial data
+library(leaflet)      # map creation
+library(janitor)      # data cleaning
+library(RColorBrewer) # colour palettes
+```
+
+### Data sources
+
+I'm using a number of data sources which will be accessed in the below chunk:
+
+* The Bikepoint API:
+  + Used to access the coordinates of all Santander bike docking stations in London.
+  + Source: https://api.tfl.gov.uk/BikePoint/
+* Deprivation data:
+  + Provides information on a variety of different deprivation indices.
+  + Source: https://www.gov.uk/government/statistics/english-indices-of-deprivation-2019
+* Local Authority Area & Lower Layer Super Output Area shapefiles and look-up table.
+  + Used to create maps of different types of subregion of London
+  + Source: https://geoportal.statistics.gov.uk/
+* Public Health England profiles:
+  + Provides data on a variety of public health outcomes
+  + Source: https://fingertips.phe.org.uk/
+
+```{r data_access}
+
+# access bikepoint API
+BikesAPI <- "https://api.tfl.gov.uk/BikePoint/"
+get_bikes <- content(GET(BikesAPI), "text")
+
+# convert from JSON and select relevant fields
+bikes_JSON <- fromJSON(get_bikes, flatten = TRUE)
+df_bikes <- as.data.frame(bikes_JSON) %>%
+  select(c(id, commonName, lat, lon))
+
+# look-up table has been accessed and downloaded from the above source
+# this is just being used as it contains region data which can be joined
+# to other data sources to filter countrywide data to London only
+lsoa_lkp <- fread("data/lsoa_lookup.csv") %>%
+  # clean headings
+  clean_names() %>% 
+  # filter for London and select subregions
+  filter(rgn11nm == "London") %>%
+  select(c(lsoa11nm, lsoa11cd, lad11nm, lad11cd))
+
+# IMD data has been accessed and downloaded from the above source
+imd <- fread("data/imd_2019.csv") %>%
+  # clean headings
+  clean_names() %>% 
+  # inner join to lookup table and select columns
+  rename("lsoa11cd" = "lsoa_code_2011") %>%
+  inner_join(lsoa_lkp, by = "lsoa11cd") %>%
+  select(c(lsoa11nm, lsoa11cd, lad11nm, lad11cd, index_of_multiple_deprivation_imd_rank,
+           index_of_multiple_deprivation_imd_decile))
+
+# download LSOA shapefile for mapping
+lsoa_shp <- read_sf(dsn = "shapefiles",
+                    layer = "LSOA_2011_EW_BGC_V3") %>%
+  st_transform('+proj=longlat +datum=WGS84') %>% 
+  clean_names() %>%
+  # join to IMD data and limit regions to London
+  inner_join(imd, by = "lsoa11cd")
+
+# download Local Authority Area shapefile for mapping
+laua_shp <- read_sf(dsn = "shapefiles",
+                    layer = "Local_Authority_Districts_December_2011_GB_BFE") %>%
+  st_transform('+proj=longlat +datum=WGS84') %>% 
+  clean_names() %>%
+  # filter by local authority area
+  filter(lad11cd %in% imd$lad11cd)
+
+
+# set parameters for the required indicator to download Public Health Data
+# in this case I'm choosing adult physical activity levels and have looked these
+# codes up previously, and the area chosen is Local Authority
+indid  <- 93015
+areaid <- 202
+
+# access data and filter by region and most recent time period
+df_exercise <- fingertips_data(IndicatorID = indid, AreaTypeID = 202) %>%
+  filter(AreaCode %in% lsoa_lkp$lad11cd, Timeperiod == "2021/22") %>%
+  rename(lad11cd = AreaCode)
+
+
+# add exercise data to the Local Authority shape files
+laua_shp <- laua_shp %>%
+  inner_join(df_exercise, by="lad11cd")
+
+```
+
+### Map of docking stations and Index of Multiple deprivation deciles
+
+The next stage is to create the maps themselves. My idea here is to have two maps. The first will show the bike docking stations imposed over an Index of Multiple Deprivation map of London. This data provides scores at LSOA level for various indices of deprivation, from health deprivation to access to green space. The 'multiple deprivation' index is an amalgamation of these separate indices which provides an overall score based on the level of deprivation in the area.
+
+Whilst this is not a specific of an indicator as, say, childhood obesity or adult exercise levels, IMD scores are known to correlate with public health, and could form a good basis of an indicator for where new bike docking stations could be placed in order to benefit the population as a whole.
+
+
+```{r imd_map}
+
+# set colour palette for LSOA shapes
+imd_cols <- colorFactor(palette = "RdYlBu",
+                         domain = lsoa_shp$index_of_multiple_deprivation_imd_decile)
+
+# create map
+leaflet() %>% 
+  
+  # set view of correct area, I've just centered on a point in central London
+  # but map can be scrolled
+  setView(lat = 51.49580, lng = -0.127575, zoom = 11.2) %>%
+  
+  # this is used to generate the base map of London
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  
+  # add polygons to represent LSOAs, colour-coded according to the IMD decile
+  addPolygons(data = lsoa_shp,
+              fillColor = ~imd_cols(index_of_multiple_deprivation_imd_decile),
+              fillOpacity = 0.8,
+              stroke = T,
+              weight = 1,
+              color = "grey") %>% 
+  
+  # add markers to represent bikepoints
+  addCircleMarkers(data = df_bikes,
+                   radius = 4, 
+                   stroke = F, 
+                   fillColor = "black",
+                   fillOpacity = 0.9,
+                   lat = ~lat,
+                   lng = ~lon) %>%
+  
+  # add further imposed polygons to represent the larger subregions of the
+  # local authority areas
+  addPolygons(data = laua_shp,
+              fillOpacity = 0,
+              highlightOptions = options(color = "grey20",
+                                         weight = 4),
+              label = paste0("Local Authority 2011: ", laua_shp$lad11nm))
+
+
+```
+
+### Map of docking stations and adult physical activity levels
+
+The second map imposes the bike docking stations on a traffic-light coded map of the relevant Local Authority Areas. The traffic light system represents the level of adult physical exercise in relation to other areas of London, and could serve as another indicator of where docking stations could aid public health by encouraging exercise. 
+
+
+```{r physact_map}
+
+# create basic comparative traffic light colour palette
+pal <- colorFactor(palette = c("yellow", "red", "green"), 
+              levels = c("Similar", "Worse", "Better"))
+
+# create map
+leaflet() %>% 
+
+  # set view of correct area, I've just centered on a point in central London
+  # but map can be scrolled  
+  setView(lat = 51.49580, lng = -0.127575, zoom = 11.2) %>%
+  
+  # this is used to generate the base map of London  
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  
+  # add markers to represent bikepoints  
+  addCircleMarkers(data = df_bikes,
+                   radius = 3, 
+                   stroke = F, 
+                   fillColor = "black",
+                   fillOpacity = 0.9,
+                   lat = ~lat,
+                   lng = ~lon) %>%
+  
+  # add shapes to represent local authority areas, highlighted to show the relative
+  # levels of adult physical activity
+  addPolygons(data = laua_shp,
+              highlightOptions = options(color = "grey20",
+                                         weight = 4),
+              label = paste0("Local Authority 2011: ", laua_shp$lad11nm),
+              fillColor = ~pal(ComparedtoRegionvalueorpercentiles))
+
+
+```
