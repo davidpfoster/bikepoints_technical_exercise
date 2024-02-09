@@ -4,7 +4,9 @@ This a repository of the code used to create interactive maps imposing Santander
 
 Sources for all data used can be found in the RMarkdown. Analysis of the project, limitations and improvements can be found in the slides.
 
-The bikepoint_markdown.html output displays the output of the Markdown as performed on my computer. If you wish to run the Rmarkdown you will need to download the relevant shapefiles and add them to the tracked but empty shapefiles folder. The shapefiles can be found at the web addresses below:
+The bikepoint_markdown.html output displays the output of the Markdown as performed on my computer. To download and view the html output please click 'Download raw file'.
+
+If you wish to run the Rmarkdown itself you will need to download the relevant shapefiles and add them to the tracked but empty shapefiles folder. The shapefiles can be found at the web addresses below:
 
 https://geoportal.statistics.gov.uk/datasets/02e8d336d6804fbeabe6c972e5a27b16_0/explore
 https://geoportal.statistics.gov.uk/datasets/0c67166eba5e443688196757308cc340_0/explore
